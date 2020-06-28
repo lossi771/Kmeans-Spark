@@ -3,7 +3,7 @@ from pyspark import SparkContext
 import numpy as np
 import random
 
-
+BENCHMARK = True
 threshold = 0.1
 max_iter = 15
 
@@ -21,12 +21,15 @@ def parseInputs(argv):
 
   for opt, arg in opts:
       if opt == '-h':
-         print ('[USAGE] kmeans.py -k <clusters> -i <input_file> -o <output_file> -m <max_iter>')
+         print ('[USAGE] kmeans.py -k <clusters # or file> -i <input_file> -o <output_file> -m <max_iter>')
          print ('or')
-         print ('[USAGE] generate_point.py --clusters <clusters> --input_file <input_file> --output_file <output_file> --max_iter <max_iter>')
+         print ('[USAGE] generate_point.py --clusters <clusters # or file> --input_file <input_file> --output_file <output_file> --max_iter <max_iter>')
          sys.exit()
       elif opt in ("-k", "--clusters"):
-        clusters = int(arg)
+        if(arg.isnumeric()): 
+          clusters = int(arg)
+        else:
+          clusters = arg
       elif opt in ("-i", "--input_file"):
         input_points = arg
       elif opt in ("-o", "--output_file"):
@@ -45,6 +48,15 @@ def generate_centroids(number_of_clusters, points):
     np_centroids = random.sample(list(array_of_points), number_of_clusters)
     centroids = [(i, p) for p, i in zip(np_centroids, range(1, number_of_clusters + 1)) ] # lista di liste ** INDICE CENTROIDI PARTE DA 1 **
     return np.array(centroids, dtype=object)
+
+def get_centroids_from_f(path):
+  centroids = []
+  with open(path, "r") as file:
+    for line in file.readlines():
+      label, coord = line.split("\t")
+      centroids.append((label, np.fromstring(coord, dtype = np.float32, sep=' ')))
+  return np.array(centroids, dtype = object)
+
 
 def assign_to_closest_mean(point):
   centroids = broadcasted_centroids.value
@@ -73,13 +85,17 @@ def threshold_check(new_centroids, centroids):
 
 
 if __name__ == "__main__":
-    number_of_clusters, input_points, output_centroids, max_iter = parseInputs(sys.argv[1:])
+    clusters, input_points, output_centroids, max_iter = parseInputs(sys.argv[1:])
     master = "local" #cambiare quando si carica su cluster in "yarn"
     #sc = SparkContext(master, "KMeans")
     sc = SparkContext(appName="KMeans-App", master = "local[*]")
     sc.setLogLevel("ERROR")
     points = sc.textFile(input_points).map(create_point).cache()
-    centroids = generate_centroids(number_of_clusters, points)
+
+    if BENCHMARK:
+      centroids = get_centroids_from_file(clusters)
+    else:
+      centroids = generate_centroids(clusters, points)
     # print(centroids)
     with open('init_spark.txt', "w") as file: 
       for centroid in centroids:
