@@ -3,12 +3,12 @@ from pyspark import SparkContext
 import numpy as np
 import random
 
-BENCHMARK = True
+BENCHMARK = False
 threshold = 0.1
 max_iter = 15
 
 def parseInputs(argv):
-  
+  global threshold, max_iter, BENCHMARK
   try:
     opts, args = getopt.getopt(argv,"k:i:t:o:m:h",["clusters=","input_file=", "output_file=", "max_iter=", "threshold="])
   except getopt.GetoptError:
@@ -30,6 +30,7 @@ def parseInputs(argv):
           clusters = int(arg)
         else:
           clusters = arg
+          BENCHMARK = True
       elif opt in ("-i", "--input_file"):
         input_points = arg
       elif opt in ("-o", "--output_file"):
@@ -38,18 +39,18 @@ def parseInputs(argv):
         max_iter = int(arg)
       elif opt in ("-t", "--threshold"):
         threshold = float(arg)
-  return (clusters, input_points, output_centroids, max_iter)
+  return (clusters, input_points, output_centroids)
 
 def create_point(line_of_coordinates):
     return np.fromstring(line_of_coordinates, dtype = np.float32, sep=' ')
 
 def generate_centroids(number_of_clusters, points):
     array_of_points = points.collect()
-    np_centroids = random.sample(list(array_of_points), number_of_clusters)
-    centroids = [(i, p) for p, i in zip(np_centroids, range(1, number_of_clusters + 1)) ] # lista di liste ** INDICE CENTROIDI PARTE DA 1 **
-    return np.array(centroids, dtype=object)
+    np_centroids = random.sample(list(array_of_points), number_of_clusters) # get k cluster from the points
+    centroids = [(i, p) for p, i in zip(np_centroids, range(1, number_of_clusters + 1)) ] # list of (id, np.array(point))
+    return np.array(centroids, dtype=object) 
 
-def get_centroids_from_f(path):
+def get_centroids_from_file(path):
   centroids = []
   with open(path, "r") as file:
     for line in file.readlines():
@@ -59,9 +60,7 @@ def get_centroids_from_f(path):
 
 
 def assign_to_closest_mean(point):
-  centroids = broadcasted_centroids.value
-  # print(type(centroids))
-  centroids_array = centroids
+  centroids_array = broadcasted_centroids.value
   # centroids_array = np.array(centroids, dtype=object) # , dtype = float
   distance = np.inf
   min_mean_id = -1 # indice del mean con distanza minima 
@@ -73,51 +72,43 @@ def assign_to_closest_mean(point):
   return (min_mean_id, point)
 
 def update_centroids(mean_pointlist):
-  arrayPoints = np.stack(list(mean_pointlist[1]), axis = 0) #rivedere per bene
+  arrayPoints = np.stack(list(mean_pointlist[1]), axis = 0) # Join a sequence of arrays along a new axis.
   return (mean_pointlist[0], np.mean(arrayPoints, axis = 0))
 
 def threshold_check(new_centroids, centroids):
   if len(new_centroids) != len(centroids):
     print("centroid array sizes are not equal !")
     sys.exit(-1)
-  print(([np.linalg.norm(np.array(new_centroids[i][1]) - np.array(centroids[i][1])) for i in range(len(centroids))]) )
-  return (max ([np.linalg.norm(np.array(new_centroids[i][1]) - np.array(centroids[i][1])) for i in range(len(centroids))]) < threshold )
+  distances = [np.linalg.norm(np.array(new_centroids[i][1]) - np.array(centroids[i][1])) for i in range(len(centroids))]
+  print("Converged centroids: {} of {}".format(sum(i <= threshold  for i in distances), len(centroids)))
+  return (max(distances) <= threshold )
 
 
 if __name__ == "__main__":
-    clusters, input_points, output_centroids, max_iter = parseInputs(sys.argv[1:])
-    master = "local" #cambiare quando si carica su cluster in "yarn"
-    #sc = SparkContext(master, "KMeans")
-    sc = SparkContext(appName="KMeans-App", master = "local[*]")
-    sc.setLogLevel("ERROR")
+    clusters, input_points, output_centroids = parseInputs(sys.argv[1:])
+    sc = SparkContext(appName="KMeans-App", master = "yarn")
+    sc.setLogLevel("WARN")
     points = sc.textFile(input_points).map(create_point).cache()
 
     if BENCHMARK:
       centroids = get_centroids_from_file(clusters)
     else:
       centroids = generate_centroids(clusters, points)
-    # print(centroids)
-    with open('init_spark.txt', "w") as file: 
-      for centroid in centroids:
-        file.write(str(centroid[0]) + "\t" + " ".join(str(round(i, 3)) for i in centroid[1]))
-        file.write('\n')
-    
+        
     converged = False
     current_iteration = 1
 
-    while not converged: # convergenza sul massimo numero di iterazioni e sul fatto che i centroidi non cambiano più?
-      broadcasted_centroids = sc.broadcast(centroids)
-      mean_pointlist = points.map(assign_to_closest_mean).groupByKey() # cid-iterable di punti assegnati, shuffling 
-      new_centroids = mean_pointlist.map(update_centroids).sortByKey(ascending=True).collect()
-      # mettere in documentazione il fatto che il numero dei cluster assumiamo sia piccolo e che quindi 
-      # non vada calcolato il conteggio dello spostamento dei centroidi in modo distribuito
-
-      converged = (current_iteration == max_iter - 1) or threshold_check(new_centroids, centroids)
+    while not converged: # criteria: max iteration or threshold
       print("curr_iteration: " + str(current_iteration))
+      broadcasted_centroids = sc.broadcast(centroids)
+      mean_pointlist = points.map(assign_to_closest_mean).groupByKey()
+      new_centroids = mean_pointlist.map(update_centroids).sortByKey(ascending=True).collect()
+     
+      converged = (current_iteration == max_iter - 1) or threshold_check(new_centroids, centroids)
+     
       current_iteration += 1
       centroids = new_centroids
 
     with open(output_centroids, "w") as file: 
       for centroid in centroids:
-        file.write(str(centroid[0])+ " " + " ".join(str(round(i, 3)) for i in centroid[1]))
-        file.write('\n')
+        file.write(str(centroid[0])+ "\t" + " ".join(str(round(i, 3)) for i in centroid[1]) + "\n")
