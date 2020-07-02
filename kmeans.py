@@ -61,7 +61,6 @@ def get_centroids_from_file(path):
 
 def assign_to_closest_mean(point):
   centroids_array = broadcasted_centroids.value
-  # centroids_array = np.array(centroids, dtype=object) # , dtype = float
   distance = np.inf
   min_mean_id = -1 # indice del mean con distanza minima 
   for current_mean_index in range(len(centroids_array)):
